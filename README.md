@@ -38,50 +38,37 @@ PSNR e SSIM vanno calcolati solo sui pixel validi, altrimenti i buchi falsano il
 
 Image-GS si basa su CUDA, siccome io ho una GPU AMD non riesco ad eseguire in locale. Per questo ci viene in aiuto la piattaforma Google Colab che ci mette a disposizione una GPU NVIDIA T4.
 
-Per usare Image-GS su Google Colab bisogna clonare il repository e installare tutte le dipendenze all'interno del notebook.
+Cloniamo il repository, dal terminale di Collab eseguiamo:
+```bash
+cd home/
 
-Crea le cartelle di lavoro:
-```
-!mkdir -p /content/image-gs
-!mkdir -p /content/data/scans
-!mkdir -p /content/data/standard
-!mkdir -p /content/experiments
-```
-
-Clonare e installare Image-GS:
-```
-%cd /content/
-!git clone https://github.com/NYU-ICL/image-gs.git
-%cd image-gs
+git clone --recurse-submodules https://github.com/Simo264/gs-texture-compression.git
 ```
 
 Installa le dipendenze con pip:
 ```
-!pip install torch torchvision torchaudio numpy opencv-python scipy matplotlib Pillow tensorboard lpips pytorch_msssim flip_evaluator
+pip install torch torchvision torchaudio numpy opencv-python scipy matplotlib Pillow tensorboard lpips pytorch_msssim flip_evaluator
 
-!pip install --index-url https://download.pytorch.org/whl/cu118
+pip install --index-url https://download.pytorch.org/whl/cu118
 
-!pip install git+https://github.com/rahul-goel/fused-ssim/ --no-build-isolation
+pip install git+https://github.com/rahul-goel/fused-ssim/ --no-build-isolation
 
-%cd gsplat
-!pip install -e ".[dev]"
-%cd ..
+cd gsplat && pip install -e ".[dev]" && cd ..
 ```
-
 
 Image-GS ci dà la possibilità di comprimere semplice immagini JPG, PNG ma anche texture color, normal, roughness, ecc. Nel mio caso specifico quello che mi interessa è Image Compression perché quando scarico texture da scansioni io ho solamente una immagine color png.
 
 Crea la directory media/images:
 ```
-!mkdir -p /content/image-gs/media/images/
+mkdir -p image-gs/media/images/
 ```
 
-In Collab possiamo eseguire image-gs con immagine di prova
+Eseguiamo image-gs con immagine PNG di prova:
 ```
 # Optimize an Image-GS representation for an input image
 # using 10000 Gaussians with half-precision parameters
 
-!python main.py \
+python main.py \
 --input_path="images/anime-7_2k.png" \
 --exp_name="test/anime-7_2k" \
 --num_gaussians=10000 \
@@ -90,7 +77,7 @@ In Collab possiamo eseguire image-gs con immagine di prova
 # Render the corresponding optimized Image-GS representation at a
 # new resolution with height 4000
 
-!python main.py \
+python main.py \
 --input_path="images/anime-7_2k.png" \
 --exp_name="test/anime-7_2k" \
 --num_gaussians=10000 \
