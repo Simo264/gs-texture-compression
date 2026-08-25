@@ -12,24 +12,56 @@ Possibilmente, pravare ad aggiungere la base di Beta Splatting per migliorare la
 ## Valutazione
 
 Valutare la qualità della compressione confrontando l'immagine ricostruita con l'immagine originale, usando metriche come PSNR o SSIM.
-Utilizzare il codice di ImageGS (https://github.com/NYU-ICL/image-gs).
-Utilizzare textures derivate da scansioni 3D ad esempio da https://texturedmesh.isti.cnr.it. Confrontare con texture standard usate da https://polyhaven.com.
+
+Attenzione: calcolare PSNR e SSIM su tutta l'immagine includendo i buchi falserebbe i
+risultati. Bisogna calcolare le metriche solo sui pixel validi.
 
 ## Suggerimenti
 
-Comincia a scaricare le textures da scansioni 3D reali e textures standard da usare come baseline di confronto.
+Scaricare textures derivate da scansioni 3D da https://texturedmesh.isti.cnr.it.
+Scaricare texture standard da https://polyhaven.com.
+Utilizzare il codice di ImageGS (https://github.com/NYU-ICL/image-gs) come base per il fitting.
 
-Il progetto si appoggia esplicitamente a ImageGS. Prima di iniziare a scrivere codice, clona il repo e fallo girare così com'è su un'immagine qualsiasi, per capire cosa produce in output e come è strutturato il codice. Solo dopo inizierei a modificare il codice:
-1. dove vengono inizializzate le gaussiane?
-2. dove viene calcolata la loss?
-3. dove avviene la densification/adaptive addition?
-4. dove avviene il ciclo di training?
+Il progetto si appoggia esplicitamente a ImageGS, più precisamente ci interessa
+il file `model.py`.
 
-Il task chiede tre modifiche concrete:
-1. non inizializzare gaussiane nelle aree vuote; serve una maschera binaria
-2. non aggiungere nuove gaussiane lì durante la densification
-3. escludere quei pixel vuoti dalla loss
+> 1. Dove vengono inizializzate le gaussiane? 
 
-Ti conviene scrivere prima uno script separato che, data una texture, produce la maschera binaria (soglia su nero/bianco/alpha).
+L'inizializzazione avviene nei metodi `_init_gaussians` e `_init_pos_scale_feat`.
 
-PSNR e SSIM vanno calcolati solo sui pixel validi, altrimenti i buchi falsano il punteggio.
+Non inizializzare gaussiane nelle aree vuote. Occorre modificare la fase di campionamento iniziale. L'idea è di creare una maschera binaria (dove 1 = pixel valido,
+0 = buco) e usarla per filtrare i pixel da cui campionare.
+Una volta creata la maschera, modificare la funzione `_sample_pos` in model.py per usare
+la maschera.
+
+> 2. Dove viene calcolata la loss?
+
+Avviene nel metodo `_get_total_loss`. Per escludere i buchi, devi modificare il calcolo
+di ogni loss in modo che consideri solo i pixel validi, usando la maschera.
+Per ogni loss (L1, L2, SSIM), devi applicare la maschera. In particolare, per L1 e L2
+puoi moltiplicare le immagini per la maschera prima di calcolare la loss, oppure usare
+un parametro reduction='none' e poi fare la media solo sui pixel validi.
+La SSIM è più complessa perché considera patch di pixel. 
+
+> 3. Dove avviene la densification/adaptive addition?
+
+L'aggiunta progressiva di gaussiane avviene nel metodo `_add_gaussians`.
+Questo metodo viene chiamato dal training loop `optimize()`, finché non si raggiunge 
+il numero totale di gaussiane desiderato.
+All'interno di `_add_gaussians`, le nuove gaussiane vengono campionate in base a una
+error_map; le aree con errore più alto ricevono più nuove gaussiane.
+
+Qua noi non dobbiamo aggiungere nuove gaussiane nelle aree vuote. Dobbiamo modificare
+il calcolo della `sample_prob` in `_add_gaussians`.
+
+> 4. Dove avviene il ciclo di training?
+
+Il ciclo di training principale è nel metodo `optimize()`.
+Qua non è necessario apportare modifiche.
+
+> 5. Dove avviene la valutazione?
+
+Infine per la valutazione, nel metodo `_evaluate()` vengono calcolati PSNR e SSIM su
+tutta l'immagine
+
+Dovremo modificare `_evaluate()` per calcolare le metriche solo sui pixel validi.
