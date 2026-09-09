@@ -129,14 +129,6 @@ class GaussianSplatting2D(nn.Module):
         self.img_h, self.img_w = self.gt_images.shape[1:]
         self.tile_bounds = ((self.img_w + self.block_w - 1) // self.block_w, (self.img_h + self.block_h - 1) // self.block_h, 1)
 
-        # alpha mask
-        alpha = load_alpha_mask(path, downsample_ratio=downsample_ratio) if os.path.isfile(path) else None
-        if alpha is not None:
-            mask = (alpha > 0.5).astype(np.float32)
-        else:
-           	mask = np.ones((self.img_h, self.img_w), dtype=np.float32)
-        self.valid_mask = torch.from_numpy(mask).to(dtype=self.dtype, device=self.device)
-
     def _separate_and_save_images(self, images, channels, path):
         images_sep = separate_image_channels(images=images, input_channels=channels)
         for idx, image in enumerate(images_sep, 1):
@@ -177,13 +169,6 @@ class GaussianSplatting2D(nn.Module):
         self.feat = nn.Parameter(torch.rand(self.num_gaussians, self.feat_dim, dtype=self.dtype, device=self.device), requires_grad=True)
         self.vis_feat = nn.Parameter(torch.rand_like(self.feat), requires_grad=False)  # Only used for Gaussian ID visualization
         self._log_compression_rate()
-
-        self.valid_mask_flat = self.valid_mask.reshape(-1)
-        n_valid = int(self.valid_mask_flat.sum().item())
-        if n_valid < self.total_num_gaussians:
-            raise ValueError(f"invalid mask: only {n_valid} valid pixels, but {self.total_num_gaussians} are needed. Hint: reduce the number of gaussians or increase the mask resolution")
-                
-        self.valid_prob = (self.valid_mask_flat / self.valid_mask_flat.sum()).to(dtype=torch.float64).cpu().numpy()
 
     def _log_compression_rate(self):
         bytes_uncompressed = 0.0
@@ -246,7 +231,7 @@ class GaussianSplatting2D(nn.Module):
                 self._compute_smap(path="models")
                 self.xy.copy_(self._sample_pos(prob=self.saliency))
             else:
-                selected = np.random.choice(self.num_pixels, self.num_gaussians, replace=False, p=self.valid_prob)
+                selected = np.random.choice(self.num_pixels, self.num_gaussians, replace=False, p=None)
                 self.xy.copy_(self.pixel_xy.detach().clone()[selected])
             # Scale
             self.scale.fill_(self.init_scale if self.disable_inverse_scale else 1.0/self.init_scale)
@@ -256,7 +241,7 @@ class GaussianSplatting2D(nn.Module):
 
     def _sample_pos(self, prob):
         num_random = round(self.init_random_ratio*self.num_gaussians)
-        selected_random = np.random.choice(self.num_pixels, num_random, replace=False, p=self.valid_prob)
+        selected_random = np.random.choice(self.num_pixels, num_random, replace=False, p=None)
         selected_other = np.random.choice(self.num_pixels, self.num_gaussians-num_random, replace=False, p=prob)
         return torch.cat([self.pixel_xy.detach().clone()[selected_random], self.pixel_xy.detach().clone()[selected_other]], dim=0)
 

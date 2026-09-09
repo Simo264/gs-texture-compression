@@ -115,21 +115,6 @@ def load_images(load_path, downsample_ratio=None, gamma=None):
         image_list.append(image)
     return np.concatenate(image_list, axis=0), num_channels_list, image_fname_list, bit_depth_list
 
-def load_alpha_mask(image_path, downsample_ratio=None):
-    """Ritorna una maschera binaria [H, W] (1 = pixel valido, 0 = buco), oppure None se non c'è alpha."""
-    raw = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-    if raw.ndim != 3 or raw.shape[-1] != 4:
-        return None
-    alpha = raw[..., 3].astype(np.float32)
-    if raw.dtype == np.uint8:
-        alpha /= 255.0
-    elif raw.dtype == np.uint16:
-        alpha /= 65535.0
-    if downsample_ratio is not None:
-        h, w = alpha.shape
-        alpha = cv2.resize(alpha, (round(w / downsample_ratio), round(h / downsample_ratio)),
-                            interpolation=cv2.INTER_NEAREST)  # NEAREST, non interpolare i bordi del buco
-    return alpha
 
 def to_output_format(image, image_format, gamma):
     if image_format not in ALLOWED_IMAGE_FILE_FORMATS:
