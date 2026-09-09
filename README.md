@@ -1,67 +1,62 @@
 # Gaussian Splatting for Texture Compression
 
-Siamo interessati a studiare come usare GS per comprimere textures derivate da scansioni 3D di oggetti.
-L'idea è di fittare gaussiane 2D alle textures derivate dalle scansioni, e valutare la qualità della compressione in termini di accuratezza della texture ricostruita rispetto all'originale. Textures derivate da scansioni 3D spesso contengono dettagli fini e rumore, quindi sarà interessante vedere come Gaussian Splatting riesce a catturare questi aspetti. Inoltre, queste textures sono spesso piene di "buchi" (aree senza dati), dovuti ai metodi automatici di generazione delle textures dalle scansioni 3D. In questi "buchi", non ci interessano i valori delle immagini, dato che non verranno usati nel rendering finale.
+## Descrizione
 
-## Algoritmo 
+Questo progetto studia l'uso di Gaussian Splatting 2D per la compressione di texture, con attenzione al caso delle texture derivate da scansioni 3D di oggetti reali.
 
-Usare l'implementazione di Gaussian Splatting per immagini 2D. Applicare Gaussian Splatting alle textures derivate da scansioni 3D, fittando un numero variabile di gaussiane.
-Durante il fitting, ignorare le aree "vuote" della texture (ad esempio, aree completamente nere o bianche, a seconda del formato della texture). Modificare il codice in modo che non inserisca nuove gaussiane in queste aree durante il fitting, nè le inserisca all'inizio. Modificare il calcolo della loss in modo che non consideri i pixel in queste aree.
-Possibilmente, pravare ad aggiungere la base di Beta Splatting per migliorare la qualità del fitting.
+L'approccio consiste nel fittare un insieme di gaussiane 2D a una texture, così da ottenere una rappresentazione compressa dell'immagine. La qualità della ricostruzione viene valutata confrontando l'immagine renderizzata dalle gaussiane con quella originale, tramite le metriche PSNR e SSIM.
 
-## Valutazione
+A differenza delle texture standard, le texture derivate da scansioni 3D presentano spesso aree prive di dati validi (dei buchi), generate automaticamente durante il processo di UV-mapping/baking della scansione. Questi pixel non hanno un valore di colore significativo e non devono influenzare né l'inizializzazione delle gaussiane, né il training, né la valutazione finale.
 
-Valutare la qualità della compressione confrontando l'immagine ricostruita con l'immagine originale, usando metriche come PSNR o SSIM.
+Il progetto si basa sull'implementazione originale di [ImageGS](https://github.com/NYU-ICL/image-gs) (NYU-ICL), estesa per gestire correttamente questi casi.
 
-Attenzione: calcolare PSNR e SSIM su tutta l'immagine includendo i buchi falserebbe i
-risultati. Bisogna calcolare le metriche solo sui pixel validi.
+## Struttura del repository
 
-## Suggerimenti
+Il flag `is_texture_scan` (in cfgs/default.yaml, oppure passabile da CLI come --is_texture_scan) determina il comportamento:
+- `is_texture_scan`: False è il comportamento di default di ImageGS. Nessuna maschera viene applicata.
+- `is_texture_scan`: True abilita la maschera di buchi, per texture derivate da scansioni 3D.
 
-Scaricare textures derivate da scansioni 3D da https://texturedmesh.isti.cnr.it.
-Scaricare texture standard da https://polyhaven.com.
-Utilizzare il codice di ImageGS (https://github.com/NYU-ICL/image-gs) come base per il fitting.
+## How to use
 
-Il progetto si appoggia esplicitamente a ImageGS, più precisamente ci interessa
-il file `model.py`.
+Per compressione di immagini standard con ImageGS:
 
-> 1. Dove vengono inizializzate le gaussiane? 
+```bash
+python main.py \
+  --input_path=images/anime-1_2k.png \
+  --exp_name=test/anime-1_2k \
+  --num_gaussians=10000 \
+  --quantize
 
-L'inizializzazione avviene nei metodi `_init_gaussians` e `_init_pos_scale_feat`.
+python main.py \
+  --input_path=images/anime-1_2k.png \
+  --exp_name=test/anime-1_2k \
+  --num_gaussians=10000 \
+  --quantize \
+  --eval \
+```
 
-Non inizializzare gaussiane nelle aree vuote. Occorre modificare la fase di campionamento iniziale. L'idea è di creare una maschera binaria (dove 1 = pixel valido,
-0 = buco) e usarla per filtrare i pixel da cui campionare.
-Una volta creata la maschera, modificare la funzione `_sample_pos` in model.py per usare
-la maschera.
+Per compressione di texture da scansioni 3D con ImageGS:
 
-> 2. Dove viene calcolata la loss?
+```bash
+python main.py \
+  --is_texture_scan \
+  --input_path=textures/texture-scan-3d.png \
+  --exp_name=test/texture-scan-3d \
+  --num_gaussians=10000 \
+  --quantize
 
-Avviene nel metodo `_get_total_loss`. Per escludere i buchi, devi modificare il calcolo
-di ogni loss in modo che consideri solo i pixel validi, usando la maschera.
-Per ogni loss (L1, L2, SSIM), devi applicare la maschera. In particolare, per L1 e L2
-puoi moltiplicare le immagini per la maschera prima di calcolare la loss, oppure usare
-un parametro reduction='none' e poi fare la media solo sui pixel validi.
-La SSIM è più complessa perché considera patch di pixel. 
+python main.py \
+  --is_texture_scan \
+  --input_path=textures/texture-scan-3d.png \
+  --exp_name=test/texture-scan-3d \
+  --num_gaussians=10000 \
+  --quantize \
+  --eval \
+```
 
-> 3. Dove avviene la densification/adaptive addition?
+Le immagini si trovano dentro alla directory image-gs/media
 
-L'aggiunta progressiva di gaussiane avviene nel metodo `_add_gaussians`.
-Questo metodo viene chiamato dal training loop `optimize()`, finché non si raggiunge 
-il numero totale di gaussiane desiderato.
-All'interno di `_add_gaussians`, le nuove gaussiane vengono campionate in base a una
-error_map; le aree con errore più alto ricevono più nuove gaussiane.
+## Dataset utilizzati
 
-Qua noi non dobbiamo aggiungere nuove gaussiane nelle aree vuote. Dobbiamo modificare
-il calcolo della `sample_prob` in `_add_gaussians`.
-
-> 4. Dove avviene il ciclo di training?
-
-Il ciclo di training principale è nel metodo `optimize()`.
-Qua non è necessario apportare modifiche.
-
-> 5. Dove avviene la valutazione?
-
-Infine per la valutazione, nel metodo `_evaluate()` vengono calcolati PSNR e SSIM su
-tutta l'immagine
-
-Dovremo modificare `_evaluate()` per calcolare le metriche solo sui pixel validi.
+- Texture standard: [Poly Haven](https://polyhaven.com)
+- Texture da scansioni 3D: [texturedmesh.isti.cnr.it](https://texturedmesh.isti.cnr.it)

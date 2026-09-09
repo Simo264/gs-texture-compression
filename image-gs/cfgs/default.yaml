@@ -1,3 +1,5 @@
+is_texture_scan:       False # Se True, la texture ha buchi e viene gestita con una maschera di validità
+
 seed:                  123
 device:                "cuda:0"
 # Evaluation
