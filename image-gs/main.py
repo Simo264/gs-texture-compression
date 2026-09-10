@@ -41,8 +41,6 @@ def get_log_dir(args):
 
 def main(args):
     args.log_dir = get_log_dir(args)
-    print(args.log_dir)
-    return
     ImageGS = GaussianSplatting2D(args)
     if args.eval:
         ImageGS.render(render_height=args.render_height)
