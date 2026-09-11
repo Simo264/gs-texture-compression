@@ -49,17 +49,17 @@ class GaussianSplatting2D(nn.Module):
         self.device = args.device
         self.dtype = torch.float32
         self._init_logging(args)
+        self._init_bit_precision(args)
         self._init_target(args)
-        # self._init_bit_precision(args)
-        # self._init_gaussians(args)
-        # self._init_loss(args)
-        # self._init_optimization(args)
+        self._init_gaussians(args)
+        self._init_loss(args)
+        self._init_optimization(args)
         # # Initialization
-        # if self.evaluate:
-        #     self.ckpt_file = args.ckpt_file
-        #     self._load_model()
-        # else:
-        #     self._init_pos_scale_feat(args)
+        if self.evaluate:
+             self.ckpt_file = args.ckpt_file
+             self._load_model()
+        else:
+             self._init_pos_scale_feat(args)
 
     def _init_logging(self, args):
         self.log_dir = args.log_dir
@@ -102,6 +102,13 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info(f"Start {action} {args.num_gaussians:d} Gaussians for '{args.input_path}'")
         self.worklog.info("***********************************************")
 
+    def _init_bit_precision(self, args):
+        self.quantize = args.quantize
+        self.pos_bits = args.pos_bits
+        self.scale_bits = args.scale_bits
+        self.rot_bits = args.rot_bits
+        self.feat_bits = args.feat_bits
+    
     def _init_target(self, args):
         self.gamma = args.gamma
         self.block_h, self.block_w = 16, 16
@@ -111,6 +118,13 @@ class GaussianSplatting2D(nn.Module):
     
         self.gt_image = torch.from_numpy(image).to(dtype=self.dtype, device=self.device)
         self.mask = torch.from_numpy(mask).to(dtype=torch.bool, device=self.device)
+        # Precompute normalized (x, y) coordinates of valid pixels, riusato per init e densificazione
+        valid_rows, valid_cols = torch.nonzero(self.mask[0], as_tuple=True)  # righe/colonne in pixel space
+        self.valid_coords = torch.stack([
+            (valid_cols.to(self.dtype) + 0.5) / self.img_w,
+            (valid_rows.to(self.dtype) + 0.5) / self.img_h,
+        ], dim=1)  # (N_valid, 2), normalizzato in [0, 1], ordine (x, y)
+    
         self.num_pixels = self.img_h * self.img_w
         self.num_valid_pixels = int(self.mask.sum().item())
         self.tile_bounds = (
@@ -122,20 +136,7 @@ class GaussianSplatting2D(nn.Module):
         if not self.evaluate:
             path = f"{self.log_dir}/gt_res-{self.img_h:d}x{self.img_w:d}"
             save_image(self.gt_image, self.mask, f"{path}.png", gamma=self.gamma)
-
-    # def _separate_and_save_images(self, images, channels, path):
-    #     images_sep = separate_image_channels(images=images, input_channels=channels)
-    #     for idx, image in enumerate(images_sep, 1):
-    #         suffix = "" if len(images_sep) == 1 else f"_{idx:d}"
-    #         save_image(image, f"{path}{suffix}.{self.save_image_format}", gamma=self.gamma)
-
-    def _init_bit_precision(self, args):
-        self.quantize = args.quantize
-        self.pos_bits = args.pos_bits
-        self.scale_bits = args.scale_bits
-        self.rot_bits = args.rot_bits
-        self.feat_bits = args.feat_bits
-
+    
     def _init_gaussians(self, args):
         self.num_gaussians = args.num_gaussians
         self.total_num_gaussians = args.num_gaussians
@@ -156,28 +157,29 @@ class GaussianSplatting2D(nn.Module):
         self.disable_topk_norm = args.disable_topk_norm
         self.disable_inverse_scale = args.disable_inverse_scale
         self.disable_color_init = args.disable_color_init
-        self.xy = nn.Parameter(torch.rand(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
+    
+        self.xy = nn.Parameter(self._sample_valid_positions(self.num_gaussians), requires_grad=True)
         self.scale = nn.Parameter(torch.ones(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
         self.rot = nn.Parameter(torch.zeros(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
-        self.feat_dim = sum(self.input_channels)
+        self.feat_dim = 3  # RGB fisso: l'alpha è solo maschera, non viene compresso
         self.feat = nn.Parameter(torch.rand(self.num_gaussians, self.feat_dim, dtype=self.dtype, device=self.device), requires_grad=True)
         self.vis_feat = nn.Parameter(torch.rand_like(self.feat), requires_grad=False)  # Only used for Gaussian ID visualization
         self._log_compression_rate()
 
+    def _sample_valid_positions(self, n):
+        """Campiona n posizioni (x, y) normalizzate in [0,1], solo tra i pixel validi (fuori dai buchi)."""
+        idx = torch.randint(0, self.num_valid_pixels, (n,), device=self.device)
+        return self.valid_coords[idx].clone()
+
     def _log_compression_rate(self):
-        bytes_uncompressed = 0.0
-        curr_channel = 0
-        for num_channels, bit_depth in zip(self.input_channels, self.bit_depths):
-            bytes_uncompressed += float(self.gt_images[curr_channel:curr_channel+num_channels].numel()) * (bit_depth / 8.0)
-            curr_channel += num_channels
-        bpp_uncompressed = 0.0
-        for num_channels, bit_depth in zip(self.input_channels, self.bit_depths):
-            bpp_uncompressed += float(num_channels) * bit_depth
+        bytes_uncompressed = float(self.gt_image.numel()) * (self.bit_depth / 8.0)
+        bpp_uncompressed = float(self.feat_dim) * self.bit_depth
         bppc_uncompressed = bpp_uncompressed / self.feat_dim
         self.worklog.info(f"Uncompressed: {bytes_uncompressed/1e3:.2f} KB | {bpp_uncompressed:.3f} bpp | {bppc_uncompressed:.3f} bppc")
+    
         bits_compressed = (2*self.pos_bits + 2*self.scale_bits + self.rot_bits + self.feat_dim*self.feat_bits) * self.total_num_gaussians
         bytes_compressed = bits_compressed / 8.0
-        bpp_compressed = float(bits_compressed) / self.num_pixels
+        bpp_compressed = float(bits_compressed) / self.num_valid_pixels
         bppc_compressed = bpp_compressed / self.feat_dim
         self.num_bytes = bytes_compressed
         self.worklog.info(f"Compressed: {bytes_compressed/1e3:.2f} KB | {bpp_compressed:.3f} bpp | {bppc_compressed:.3f} bppc")
@@ -232,6 +234,9 @@ class GaussianSplatting2D(nn.Module):
             # Feature
             if not self.disable_color_init:
                 self.feat.copy_(self._get_target_features(positions=self.xy).detach().clone())
+
+
+
 
     def _sample_pos(self, prob):
         num_random = round(self.init_random_ratio*self.num_gaussians)
