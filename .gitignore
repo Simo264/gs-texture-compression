@@ -6,6 +6,8 @@ results/
 .vscode/
 .DS_Store
 *.code-workspace
+tmp.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

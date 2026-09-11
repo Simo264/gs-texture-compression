@@ -45,6 +45,7 @@ class GaussianSplatting2D(nn.Module):
     def __init__(self, args):
         super(GaussianSplatting2D, self).__init__()
         self.evaluate = args.eval
+        self.is_texture_scan = args.is_texture_scan
         set_random_seed(seed=args.seed)
         self.device = args.device
         self.dtype = torch.float32

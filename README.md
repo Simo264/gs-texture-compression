@@ -10,32 +10,51 @@ A differenza delle texture standard, le texture derivate da scansioni 3D present
 
 Il progetto si basa sull'implementazione originale di [ImageGS](https://github.com/NYU-ICL/image-gs) (NYU-ICL), estesa per gestire correttamente questi casi.
 
-## Struttura del repository
+## Config Google Colab
 
-Il flag `is_texture_scan` (in cfgs/default.yaml, oppure passabile da CLI come --is_texture_scan) determina il comportamento:
-- `is_texture_scan`: False è il comportamento di default di ImageGS. Nessuna maschera viene applicata.
-- `is_texture_scan`: True abilita la maschera di buchi, per texture derivate da scansioni 3D.
+Image-GS si basa su CUDA, per questo motivo devo utilizzare la piattaforma Google Colab che mette a disposizione una GPU NVIDIA T4.
+
+Da terminale:
+
+```bash
+git clone https://github.com/Simo264/gs-texture-compression.git
+
+# creare un ambiente con Python 3.11
+pip install uv
+uv venv --seed --python 3.11 /content/venv311
+source venv311/bin/activate
+
+# Installa le dipendenze:
+pip install pyyaml flip-evaluator lpips matplotlib numpy opencv-python pytorch-msssim scikit-image scipy torchmetrics torch torchvision torchaudio
+
+pip install --index-url https://download.pytorch.org/whl/cu124
+
+pip install git+https://github.com/rahul-goel/fused-ssim/ --no-build-isolation
+
+cd /content/gs-texture-compression/image-gs/gsplat
+pip install . --no-build-isolation
+```
 
 ## How to use
 
-Per compressione di immagini standard con ImageGS:
+Per verificare che l'installazione sia avvenuta correttamente, proviamo a effettuare una compressione di un'immagine di test con ImageGS:
 
 ```bash
 python main.py \
-  --input_path=images/anime-1_2k.png \
-  --exp_name=test/anime-1_2k \
-  --num_gaussians=10000 \
-  --quantize
+--input_path="images/robot.png" \
+--exp_name="test/robot" \
+--num_gaussians=10000 \
+--quantize
 
 python main.py \
-  --input_path=images/anime-1_2k.png \
-  --exp_name=test/anime-1_2k \
-  --num_gaussians=10000 \
-  --quantize \
-  --eval \
+--input_path="images/robot.png" \
+--exp_name="test/robot" \
+--num_gaussians=10000 \
+--quantize \
+--eval
 ```
 
-Per compressione di texture da scansioni 3D con ImageGS:
+Per compressione di texture da scansioni 3D con ImageGS possiamo aggiungere l'opzione `--is_texture_scan`:
 
 ```bash
 python main.py \
@@ -54,9 +73,4 @@ python main.py \
   --eval \
 ```
 
-Le immagini si trovano dentro alla directory image-gs/media
-
-## Dataset utilizzati
-
-- Texture standard: [Poly Haven](https://polyhaven.com)
-- Texture da scansioni 3D: [texturedmesh.isti.cnr.it](https://texturedmesh.isti.cnr.it)
+> Le immagini si trovano dentro alla directory image-gs/media
