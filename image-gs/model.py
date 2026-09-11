@@ -24,10 +24,10 @@ from utils.image_utils import (
     compute_image_gradients,
     get_grid,
     get_psnr,
-    load_images,
+    load_texture,
     save_error_maps,
     save_image,
-    separate_image_channels,
+    # separate_image_channels,
     visualize_added_gaussians,
     visualize_gaussian_footprint,
     visualize_gaussian_position,
@@ -44,23 +44,22 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="lpips")
 class GaussianSplatting2D(nn.Module):
     def __init__(self, args):
         super(GaussianSplatting2D, self).__init__()
-        self.evaluate = args.eval
-        self.is_texture_scan = args.is_texture_scan
         set_random_seed(seed=args.seed)
+        self.evaluate = args.eval
         self.device = args.device
         self.dtype = torch.float32
         self._init_logging(args)
         self._init_target(args)
-        self._init_bit_precision(args)
-        self._init_gaussians(args)
-        self._init_loss(args)
-        self._init_optimization(args)
-        # Initialization
-        if self.evaluate:
-            self.ckpt_file = args.ckpt_file
-            self._load_model()
-        else:
-            self._init_pos_scale_feat(args)
+        # self._init_bit_precision(args)
+        # self._init_gaussians(args)
+        # self._init_loss(args)
+        # self._init_optimization(args)
+        # # Initialization
+        # if self.evaluate:
+        #     self.ckpt_file = args.ckpt_file
+        #     self._load_model()
+        # else:
+        #     self._init_pos_scale_feat(args)
 
     def _init_logging(self, args):
         self.log_dir = args.log_dir
@@ -105,36 +104,30 @@ class GaussianSplatting2D(nn.Module):
 
     def _init_target(self, args):
         self.gamma = args.gamma
-        self.downsample = args.downsample
-        if self.downsample:
-            self.downsample_ratio = float(args.downsample_ratio)
-        self.block_h, self.block_w = 16, 16  # Warning: Must match hardcoded value in CUDA kernel, modify with caution
-        self._load_target_images(path=os.path.join(args.data_root, args.input_path))
-        if self.downsample:
-            self.gt_images_upsampled = self.gt_images
-            self.img_h_upsampled, self.img_w_upsampled = self.img_h, self.img_w
-            self.tile_bounds_upsampled = self.tile_bounds
-            self._load_target_images(path=os.path.join(args.data_root, args.input_path), downsample_ratio=self.downsample_ratio)
-            if not self.evaluate:
-                path = f"{self.log_dir}/gt_upsample-{self.downsample_ratio:.1f}_res-{self.img_h_upsampled:d}x{self.img_w_upsampled:d}"
-                self._separate_and_save_images(images=self.gt_images_upsampled, channels=self.input_channels, path=path)
+        self.block_h, self.block_w = 16, 16
+    
+        image, mask, self.img_h, self.img_w, self.bit_depth = load_texture(
+            path=os.path.join(args.data_root, args.input_path), gamma=self.gamma)
+    
+        self.gt_image = torch.from_numpy(image).to(dtype=self.dtype, device=self.device)
+        self.mask = torch.from_numpy(mask).to(dtype=torch.bool, device=self.device)
         self.num_pixels = self.img_h * self.img_w
+        self.num_valid_pixels = int(self.mask.sum().item())
+        self.tile_bounds = (
+            (self.img_w + self.block_w - 1) // self.block_w,
+            (self.img_h + self.block_h - 1) // self.block_h,
+            1,
+        )
+    
         if not self.evaluate:
             path = f"{self.log_dir}/gt_res-{self.img_h:d}x{self.img_w:d}"
-            self._separate_and_save_images(images=self.gt_images, channels=self.input_channels, path=path)
+            save_image(self.gt_image, self.mask, f"{path}.png", gamma=self.gamma)
 
-    def _load_target_images(self, path, downsample_ratio=None):
-        self.gt_images, self.input_channels, self.image_fnames, self.bit_depths = load_images(
-            load_path=path, downsample_ratio=downsample_ratio, gamma=self.gamma)
-        self.gt_images = torch.from_numpy(self.gt_images).to(dtype=self.dtype, device=self.device)
-        self.img_h, self.img_w = self.gt_images.shape[1:]
-        self.tile_bounds = ((self.img_w + self.block_w - 1) // self.block_w, (self.img_h + self.block_h - 1) // self.block_h, 1)
-
-    def _separate_and_save_images(self, images, channels, path):
-        images_sep = separate_image_channels(images=images, input_channels=channels)
-        for idx, image in enumerate(images_sep, 1):
-            suffix = "" if len(images_sep) == 1 else f"_{idx:d}"
-            save_image(image, f"{path}{suffix}.{self.save_image_format}", gamma=self.gamma)
+    # def _separate_and_save_images(self, images, channels, path):
+    #     images_sep = separate_image_channels(images=images, input_channels=channels)
+    #     for idx, image in enumerate(images_sep, 1):
+    #         suffix = "" if len(images_sep) == 1 else f"_{idx:d}"
+    #         save_image(image, f"{path}{suffix}.{self.save_image_format}", gamma=self.gamma)
 
     def _init_bit_precision(self, args):
         self.quantize = args.quantize
