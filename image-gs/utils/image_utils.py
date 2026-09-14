@@ -31,100 +31,85 @@ PLOT_DPI = 72.0
 GAUSSIAN_ZOOM = 5
 GAUSSIAN_COLOR = "#80ed99"
 
-def load_texture(path, gamma=None, alpha_threshold=0.0):
+def load_texture(load_path):
     """
-    Carica una singola texture PNG RGBA. Il canale alpha non viene trattato
-    come dato da ricostruire: viene usato per costruire una maschera binaria
-    dei pixel validi (alpha > alpha_threshold) da usare durante fitting e loss.
+    Load a single RGBA PNG texture.
 
     Returns:
-        image (np.ndarray): RGB, shape (3, H, W), float32 in [0, 1] (o gamma-corretto)
-        mask (np.ndarray):   bool, shape (1, H, W), True = pixel valido
-        img_h, img_w (int)
-        bit_depth (int): 8, 16 o 32
+        rgb: np.ndarray, shape (3, H, W), float32 in [0, 1]
+        alpha: np.ndarray, shape (H, W), float32 in [0, 1]
+        bit_depth: int, 8 or 16
     """
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Texture file not found: '{path}'")
-    if os.path.splitext(path)[1].lower() != ".png":
-        raise ValueError(f"Expected PNG file, got: '{path}'")
+    if not (os.path.isfile(load_path) and os.path.splitext(load_path)[1].lower() == ".png"):
+        raise FileNotFoundError(f"No PNG texture found at '{load_path}'")
 
-    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    if raw is None:
-        raise ValueError(f"Failed to read image: '{path}'")
-    if raw.ndim != 3 or raw.shape[-1] != 4:
-        raise ValueError(f"Expected RGBA image with 4 channels, got shape {raw.shape}")
-
-    # cv2 carica in ordine BGRA -> converto in RGBA
-    raw = raw[..., [2, 1, 0, 3]]
-
-    if raw.dtype == np.uint8:
-        raw = raw.astype(np.float32) / 255.0
-        bit_depth = 8
-    elif raw.dtype == np.uint16:
-        raw = raw.astype(np.float32) / 65535.0
-        bit_depth = 16
-    elif raw.dtype == np.float32:
-        bit_depth = 32
-    else:
-        raise ValueError(f"Unsupported image dtype: {raw.dtype}")
-
-    rgb = raw[..., :3]
-    alpha = raw[..., 3]
-    mask = alpha > alpha_threshold  # (H, W) bool, True = pixel valido
-
-    if gamma is not None:
-        rgb = np.power(rgb, gamma)  # la gamma correction si applica solo al colore, non alla maschera
-
-    image = np.ascontiguousarray(rgb.transpose(2, 0, 1))   # (3, H, W)
-    mask = mask[np.newaxis, ...]                           # (1, H, W)
-    img_h, img_w = image.shape[1:]
-    return image, mask, img_h, img_w, bit_depth
-
-def to_output_format(image, gamma=None):
-    """
-    image: np.ndarray RGBA, shape (H, W, 4), float in [0, 1].
-    Ritorna un array (H, W, 4) uint8, pronto per cv2.imwrite (dopo riordino canali).
-    """
+    image = cv2.imread(load_path, cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise FileNotFoundError(f"Could not read image at '{load_path}'")
     if image.ndim != 3 or image.shape[-1] != 4:
-        raise ValueError(f"Expected (H, W, 4), got shape {image.shape}")
+        raise ValueError(f"Expected RGBA image with 4 channels, got shape {image.shape}")
 
-    image = image.astype(np.float32, copy=True)
-    if gamma is not None:
-        rgb = np.power(image[..., :3], 1.0 / gamma)
-        image = np.concatenate([rgb, image[..., 3:4]], axis=-1)
+    # cv2 loads as BGRA -> reorder to RGBA
+    image = image[..., [2, 1, 0, 3]]
 
-    image = np.clip(image, 0.0, 1.0)
-    return (255.0 * image).astype(np.uint8)
+    if image.dtype == np.uint8:
+        image = image.astype(np.float32) / 255.0
+        bit_depth = 8
+    elif image.dtype == np.uint16:
+        image = image.astype(np.float32) / 65535.0
+        bit_depth = 16
+    else:
+        raise ValueError(f"Unsupported image dtype: {image.dtype}")
 
-def save_image(image, mask, save_path, gamma=None):
+    rgb = image[..., :3].transpose(2, 0, 1)  # (3, H, W)
+    alpha = image[..., 3]                    # (H, W)
+    return rgb, alpha, bit_depth
+
+def save_texture(rgb, alpha, save_path, bit_depth=8, zoom=None):
     """
-    image: RGB, shape (3, H, W), float in [0, 1]
-    mask:  bool o float, shape (1, H, W) o (H, W) — True/1 = pixel valido
-    Salva un PNG RGBA: la maschera diventa il canale alpha, i buchi restano trasparenti.
+    Save an RGB image + alpha channel as a single RGBA PNG.
+
+    Args:
+        rgb: torch.Tensor or np.ndarray, shape (3, H, W), values in [0, 1]
+        alpha: torch.Tensor or np.ndarray, shape (H, W), values in [0, 1]
+        save_path: destination path, must end in .png
+        bit_depth: int, 8 or 16 (default 8)
     """
-    if isinstance(image, torch.Tensor):
-        image = image.detach().cpu().clone().numpy()
-    if isinstance(mask, torch.Tensor):
-        mask = mask.detach().cpu().clone().numpy()
+    if os.path.splitext(save_path)[1].lower() != ".png":
+        raise ValueError(f"Invalid image format (expected .png): {save_path}")
 
-    image = np.asarray(image)
-    mask = np.asarray(mask).astype(np.float32)
+    if isinstance(rgb, torch.Tensor):
+        rgb = rgb.detach().cpu().clone().numpy()
+    if isinstance(alpha, torch.Tensor):
+        alpha = alpha.detach().cpu().clone().numpy()
 
-    if mask.ndim == 3 and mask.shape[0] == 1:
-        mask = mask[0]
-    if mask.ndim != 2:
-        raise ValueError(f"Expected mask of shape (1, H, W) or (H, W), got {mask.shape}")
-    if image.ndim != 3 or image.shape[0] != 3:
-        raise ValueError(f"Expected RGB image of shape (3, H, W), got {image.shape}")
-    if image.shape[1:] != mask.shape:
-        raise ValueError(f"Image {image.shape[1:]} and mask {mask.shape} spatial dims mismatch")
+    if rgb.shape[0] != 3:
+        raise ValueError(f"Expected RGB tensor with shape (3, H, W), got {rgb.shape}")
+    if alpha.shape != rgb.shape[1:]:
+        raise ValueError(f"Alpha shape {alpha.shape} does not match RGB spatial shape {rgb.shape[1:]}")
 
-    image_hwc = image.transpose(1, 2, 0)                          # (3, H, W) -> (H, W, 3)
-    rgba = np.concatenate([image_hwc, mask[..., np.newaxis]], -1) # (H, W, 4)
+    rgb = rgb.transpose(1, 2, 0).astype(np.float32)   # (H, W, 3)
+    alpha = alpha.astype(np.float32)                   # (H, W)
 
-    rgba = to_output_format(rgba, gamma)
-    bgra = rgba[..., [2, 1, 0, 3]]  # RGBA -> BGRA per cv2
-    cv2.imwrite(save_path, bgra)
+    rgba = np.concatenate([rgb, alpha[..., None]], axis=-1)  # (H, W, 4)
+    rgba = np.clip(rgba, 0.0, 1.0)
+    if bit_depth == 8:
+        rgba = (255.0 * rgba).astype(np.uint8)
+    elif bit_depth == 16:
+        rgba = (65535.0 * rgba).astype(np.uint16)
+    else:
+        raise ValueError(f"Unsupported bit_depth: {bit_depth}")
+            
+    if zoom is not None and zoom > 0.0:
+        height, width = rgba.shape[:2]
+        rgba = cv2.resize(rgba, (round(width * zoom), round(height * zoom)), interpolation=cv2.INTER_NEAREST)
+
+    # RGBA -> BGRA for cv2
+    rgba = rgba[..., [2, 1, 0, 3]]
+    cv2.imwrite(save_path, rgba)
+
+
+
 
 
 
@@ -151,104 +136,6 @@ def compute_image_gradients(image):
     gx = norm(np.stack(gx, axis=0), ord=2, axis=0).astype(np.float32)
     return gy, gx
 
-# def load_images(load_path, downsample_ratio=None, gamma=None):
-#     """
-#     Load target images or textures from a directory or a single file.
-#     """
-#     image_list = []
-#     image_path_list = []
-#     image_fname_list = []
-#     num_channels_list = []
-#     bit_depth_list = []
-#     if os.path.isfile(load_path) and os.path.splitext(load_path)[1].lower() in ALLOWED_IMAGE_FILE_FORMATS:
-#         image_path_list.append(load_path)
-#     elif os.path.isdir(load_path):
-#         for file in sorted(os.listdir(load_path), key=str.lower):
-#             if os.path.splitext(file)[1].lower() in ALLOWED_IMAGE_FILE_FORMATS:
-#                 image_path_list.append(os.path.join(load_path, file))
-#     if len(image_path_list) == 0:
-#         raise FileNotFoundError(f"No supported image file (JPEG, PNG, TIFF, EXR) found at '{load_path}'")
-#     for image_path in image_path_list:
-#         image_fname_list.append(os.path.splitext(os.path.basename(image_path))[0])
-#         # Warning: Only support image files in JPEG, PNG, TIFF, or EXR format
-#         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-#         if not len(image.shape) in [2, 3]:
-#             raise ValueError(f"Invalid image file ({os.path.basename(image_path)}) with shape {image.shape}")
-#         if len(image.shape) == 2:
-#             image = np.expand_dims(image, axis=2)
-#         else:
-#             if image.shape[-1] not in [1, 3, 4]:
-#                 raise ValueError(f"Invalid image file ({os.path.basename(image_path)}) with shape {image.shape}")
-#             if image.shape[-1] == 4:
-#                 image = image[..., :3]
-#             image = image[..., ::-1]
-#         num_channels = image.shape[-1]
-#         num_channels_list.append(num_channels)
-#         # 8 bit color depth
-#         if image.dtype == np.uint8:
-#             image = image.astype(np.float32) / 255.0
-#             bit_depth_list.append(8)
-#         # 16 bit color depth
-#         elif image.dtype == np.uint16:
-#             image = image.astype(np.float32) / 65535.0
-#             bit_depth_list.append(16)
-#         # 32 bit color depth
-#         else:
-#             if image.dtype != np.float32:
-#                 raise ValueError(f"Unsupported image dtype: {image.dtype}")
-#             bit_depth_list.append(32)
-#         if downsample_ratio is not None:
-#             height, width = image.shape[:2]
-#             image = cv2.resize(image, (round(width/downsample_ratio), round(height/downsample_ratio)), interpolation=cv2.INTER_LANCZOS4)
-#         if gamma is not None:
-#             image = np.power(image, gamma)
-#         image = image.transpose(2, 0, 1)
-#         image_list.append(image)
-#     return np.concatenate(image_list, axis=0), num_channels_list, image_fname_list, bit_depth_list
-
-# def to_output_format(image, image_format, gamma):
-#     if image_format not in ALLOWED_IMAGE_FILE_FORMATS:
-#         raise ValueError(f"Invalid image format: {image_format}")
-#     if len(image.shape) not in [2, 3]:
-#         raise ValueError(f"Invalid image format: shape = {image.shape}")
-#     if isinstance(image, torch.Tensor):
-#         image = image.detach().cpu().clone().numpy()
-#     if len(image.shape) == 3 and image.shape[2] not in [1, 3]:
-#         image = image.transpose(1, 2, 0)
-#         if image.shape[2] not in [1, 3]:
-#             raise ValueError(f"Invalid image format: shape = {image.shape}")
-#     if len(image.shape) == 3 and image.shape[2] == 1:
-#         image = image.squeeze(axis=2)
-#     image = image.astype(np.float32)
-#     if gamma is not None:
-#         image = np.power(image, 1.0/gamma)
-#     if image_format in [".jpeg", ".jpg"]:
-#         image = np.clip(image, 0.0, 1.0)
-#         image = (255.0 * image).astype(np.uint8)
-#     elif image_format in [".png"]:
-#         image = np.clip(image, 0.0, 1.0)
-#         image = (65535.0 * image).astype(np.uint16)
-#     return image
-
-# def save_image(image, save_path, gamma=None, zoom=None):
-#     image_format = os.path.splitext(save_path)[1].lower()
-#     image = to_output_format(image, image_format, gamma)
-#     if zoom is not None and zoom > 0.0:
-#         height, width = image.shape[:2]
-#         image = cv2.resize(image, (round(width*zoom), round(height*zoom)), interpolation=cv2.INTER_NEAREST)
-#     if len(image.shape) == 3:
-#         image = image[..., ::-1]
-#     cv2.imwrite(save_path, image)
-
-# def separate_image_channels(images, input_channels):
-#     if len(images) != sum(input_channels):
-#         raise ValueError(f"Incompatible number of channels: {len(images):d} vs {sum(input_channels):d}")
-#     image_list = []
-#     curr_channel = 0
-#     for num_channels in input_channels:
-#         image_list.append(images[curr_channel:curr_channel+num_channels])
-#         curr_channel += num_channels
-#     return image_list
 
 
 def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, input_channels, alpha=0.8, gamma=None, save_image_format="jpg"):
