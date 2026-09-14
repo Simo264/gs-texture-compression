@@ -99,7 +99,7 @@ def save_texture(rgb, alpha, save_path, bit_depth=8, zoom=None):
         rgba = (65535.0 * rgba).astype(np.uint16)
     else:
         raise ValueError(f"Unsupported bit_depth: {bit_depth}")
-            
+
     if zoom is not None and zoom > 0.0:
         height, width = rgba.shape[:2]
         rgba = cv2.resize(rgba, (round(width * zoom), round(height * zoom)), interpolation=cv2.INTER_NEAREST)
@@ -108,17 +108,13 @@ def save_texture(rgb, alpha, save_path, bit_depth=8, zoom=None):
     rgba = rgba[..., [2, 1, 0, 3]]
     cv2.imwrite(save_path, rgba)
 
-
-
-
-
-
-def get_psnr(image1, image2, max_value=1.0):
-    mse = torch.mean((image1-image2)**2)
-    if mse.item() <= 1e-7:
-        return float('inf')
-    psnr = 20*torch.log10(max_value/torch.sqrt(mse))
-    return psnr
+def save_grayscale(image, save_path):
+    """Save a single-channel float32 map (e.g. gradient/saliency) as an 8-bit grayscale PNG for visualization only."""
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().clone().numpy()
+    image = np.clip(image, 0.0, 1.0)
+    image = (255.0 * image).astype(np.uint8)
+    cv2.imwrite(save_path, image)
 
 def get_grid(h, w, x_lim=np.asarray([0, 1]), y_lim=np.asarray([0, 1])):
     x = torch.linspace(x_lim[0], x_lim[1], steps=w + 1)[:-1] + 0.5 / w
@@ -137,6 +133,16 @@ def compute_image_gradients(image):
     return gy, gx
 
 
+
+
+
+
+def get_psnr(image1, image2, max_value=1.0):
+    mse = torch.mean((image1-image2)**2)
+    if mse.item() <= 1e-7:
+        return float('inf')
+    psnr = 20*torch.log10(max_value/torch.sqrt(mse))
+    return psnr
 
 def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, input_channels, alpha=0.8, gamma=None, save_image_format="jpg"):
     """
