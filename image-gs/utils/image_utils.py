@@ -132,17 +132,66 @@ def compute_image_gradients(image):
     gx = norm(np.stack(gx, axis=0), ord=2, axis=0).astype(np.float32)
     return gy, gx
 
-
-
-
-
-
-def get_psnr(image1, image2, max_value=1.0):
-    mse = torch.mean((image1-image2)**2)
+def get_psnr(image1, image2, mask, num_valid_pixels, feat_dim, max_value=1.0):
+    diff2 = (image1 - image2) ** 2 * mask
+    mse = diff2.sum() / (num_valid_pixels * feat_dim)
     if mse.item() <= 1e-7:
         return float('inf')
-    psnr = 20*torch.log10(max_value/torch.sqrt(mse))
+    psnr = 20 * torch.log10(max_value / torch.sqrt(mse))
     return psnr
+
+def save_error_maps(path, images, gt_images, mask, save_image_format="png"):
+    images = torch.clamp(images, 0.0, 1.0)
+    gt_image = gt_images.detach().cpu().clone().numpy().transpose(1, 2, 0)
+    image = images.detach().cpu().clone().numpy().transpose(1, 2, 0)
+
+    flip_error_map, _, _ = flip_evaluator.evaluate(reference=gt_image, test=image, dynamicRangeString="LDR", inputsRGB=True, applyMagma=True)
+
+    # Zero out the error visualization in hole regions, so they don't visually
+    # suggest error where none was actually measured/optimized
+    mask_np = mask.detach().cpu().numpy()  # (H, W), bool
+    flip_error_map[~mask_np] = 0.0
+
+    save_rgb_image(flip_error_map, f"{path}.{save_image_format}")
+
+def save_rgb_image(image, save_path):
+    """Save an RGB array/tensor of shape (H, W, 3) as an 8-bit image for visualization only."""
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().clone().numpy()
+    image = np.clip(image, 0.0, 1.0)
+    image = (255.0 * image).astype(np.uint8)
+    image = image[..., ::-1]  # RGB -> BGR for cv2
+    cv2.imwrite(save_path, image)
+
+def visualize_gaussian_position(filepath, image, xy, color="#7bf1a8", size=700, every_n=10, alpha=0.8, save_image_format="png"):
+    """
+    Visualize the position of Gaussians using dots.
+    """
+    image_height, image_width = image.shape[1:]
+    xy = xy.detach().cpu().clone().numpy()[::every_n]
+    x, y = xy[:, 0] * image_width, xy[:, 1] * image_height
+
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().clone().numpy()
+    image = np.clip(image, 0.0, 1.0)
+    image = (255.0 * image).astype(np.uint8)
+    image = image.transpose(1, 2, 0)  # (C, H, W) -> (H, W, 3)
+
+    fig = plt.figure()
+    fig.set_dpi(PLOT_DPI)
+    fig.set_size_inches(w=image_width/PLOT_DPI, h=image_height/PLOT_DPI, forward=False)
+    plt.imshow(Image.fromarray(image))
+    plt.scatter(x, y, s=size, c=color, marker='o', alpha=alpha)
+    plt.xlim(0, image_width)
+    plt.ylim(image_height, 0)
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(f"{filepath}.{save_image_format}", bbox_inches='tight', pad_inches=0, dpi=PLOT_DPI)
+    plt.close()
+
+
+
+# TODO 
 
 def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, input_channels, alpha=0.8, gamma=None, save_image_format="jpg"):
     """
@@ -180,34 +229,6 @@ def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, i
         plt.close()
         curr_channel += num_channels
 
-def visualize_gaussian_position(filepath, images, xy, input_channels, color="#7bf1a8", size=700, every_n=10, alpha=0.8, gamma=None, save_image_format="jpg"):
-    """
-    Visualize the position of Gaussians using dots.
-    """
-    if len(images) != sum(input_channels):
-        raise ValueError(f"Incompatible number of channels: {len(images):d} vs {sum(input_channels):d}")
-    image_height, image_width = images.shape[1:]
-    xy = xy.detach().cpu().clone().numpy()[::every_n]
-    x, y = xy[:, 0] * image_width, xy[:, 1] * image_height
-
-    curr_channel = 0
-    for image_id, num_channels in enumerate(input_channels, 1):
-        image = images[curr_channel:curr_channel+num_channels]
-        image = to_output_format(image, f".{save_image_format}", gamma)
-        fig = plt.figure()
-        fig.set_dpi(PLOT_DPI)
-        fig.set_size_inches(w=image_width/PLOT_DPI, h=image_height/PLOT_DPI, forward=False)
-        plt.imshow(Image.fromarray(image), cmap='gray', vmin=0, vmax=255)
-        plt.scatter(x, y, s=size, c=color, marker='o', alpha=alpha)
-        plt.xlim(0, image_width)
-        plt.ylim(image_height, 0)
-        plt.axis('off')
-        plt.tight_layout()
-        suffix = "" if len(input_channels) == 1 else f"_{image_id:d}"
-        plt.savefig(f"{filepath}{suffix}.{save_image_format}", bbox_inches='tight', pad_inches=0, dpi=PLOT_DPI)
-        plt.close()
-        curr_channel += num_channels
-
 def visualize_added_gaussians(filepath, images, old_xy, new_xy, input_channels, size=500, every_n=5, alpha=0.8, gamma=None, save_image_format="jpg"):
     """
     Visualize the positions of added Gaussians during error-guided progressive optimization.
@@ -238,18 +259,3 @@ def visualize_added_gaussians(filepath, images, old_xy, new_xy, input_channels, 
         plt.savefig(f"{filepath}{suffix}.{save_image_format}", bbox_inches='tight', pad_inches=0, dpi=PLOT_DPI)
         plt.close()
         curr_channel += num_channels
-
-def save_error_maps(path, images, gt_images, channels, gamma, save_image_format="jpg"):
-    images = torch.pow(torch.clamp(images, 0.0, 1.0), 1.0/gamma)
-    gt_images = torch.pow(gt_images, 1.0/gamma)
-    images_sep = separate_image_channels(images, channels)
-    gt_images_sep = separate_image_channels(gt_images, channels)
-    for idx, (image, gt_image) in enumerate(zip(images_sep, gt_images_sep), 1):
-        gt_image, image = gt_image.detach().cpu().clone().numpy(), image.detach().cpu().clone().numpy()
-        if gt_image.shape[0] == 1:
-            gt_image = np.repeat(gt_image, 3, axis=0)
-            image = np.repeat(image, 3, axis=0)
-        gt_image, image = gt_image.transpose(1, 2, 0), image.transpose(1, 2, 0)
-        suffix = "" if len(images_sep) == 1 else f"_{idx:d}"
-        flip_error_map, _, _ = flip_evaluator.evaluate(reference=gt_image, test=image, dynamicRangeString="LDR", inputsRGB=True, applyMagma=True)
-        save_image(flip_error_map, f"{path}{suffix}.{save_image_format}")
