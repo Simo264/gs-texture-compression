@@ -122,15 +122,18 @@ class GaussianSplatting2D(nn.Module):
         alpha_epsilon = 0.1
         hole_mask_np = alpha <= alpha_epsilon  # (H, W) bool, True = invalid/hole pixel
 
-        # padding del colore nei buchi via inpainting
+        # inpainting solo per riempire i buchi, senza toccare i validi
         if hole_mask_np.any():
-            rgb_hwc_uint8 = np.clip(rgb.transpose(1, 2, 0) * 255.0, 0, 255).astype(np.uint8)
-            inpaint_mask = (hole_mask_np.astype(np.uint8)) * 255
-            rgb_filled_uint8 = cv2.inpaint(
-                rgb_hwc_uint8, inpaint_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA
-            )
-            rgb_filled = rgb_filled_uint8.astype(np.float32) / 255.0  # (H,W,3) in [0,1]
-            rgb = rgb_filled.transpose(2, 0, 1)  # torna a (3,H,W), coerente col resto del pipeline
+            rgb_hwc = rgb.transpose(1, 2, 0)  # (H,W,3) float
+            rgb_uint8 = np.clip(rgb_hwc * 255.0, 0, 255).astype(np.uint8)
+            inpaint_mask = hole_mask_np.astype(np.uint8) * 255
+            rgb_filled_uint8 = cv2.inpaint(rgb_uint8, inpaint_mask,
+                                           inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+            rgb_filled = rgb_filled_uint8.astype(np.float32) / 255.0
+
+            # sostituisci SOLO i pixel dei buchi
+            rgb_filled[~hole_mask_np] = rgb_hwc[~hole_mask_np]
+            rgb = rgb_filled.transpose(2, 0, 1)
 
         self.gt_image = torch.from_numpy(rgb).to(dtype=self.dtype, device=self.device)
         self.alpha = torch.from_numpy(alpha).to(dtype=self.dtype, device=self.device)
@@ -159,7 +162,7 @@ class GaussianSplatting2D(nn.Module):
 
     def _init_gaussians(self, args):
         self.disable_prog_optim = args.disable_prog_optim
-    
+
         # The number of gaussians cannot exceed the number of valid pixels
         self.total_num_gaussians = min(args.num_gaussians, self.num_valid_pixels)
         if self.total_num_gaussians < args.num_gaussians:
@@ -167,14 +170,14 @@ class GaussianSplatting2D(nn.Module):
                 f"Requested {args.num_gaussians:d} gaussians but only {self.num_valid_pixels:d} "
                 f"valid pixels available. Capping total_num_gaussians to {self.total_num_gaussians:d}."
             )
-    
+
         if not self.disable_prog_optim and not self.evaluate:
             self.initial_ratio = args.initial_ratio
             self.add_times = args.add_times
             self.add_steps = args.add_steps
             self.num_gaussians = math.ceil(self.initial_ratio * self.total_num_gaussians)
             self.num_gaussians = min(self.num_gaussians, self.num_valid_pixels)  # difesa ridondante ma innocua
-    
+
             self.max_add_num = math.ceil(float(self.total_num_gaussians - self.num_gaussians) / self.add_times)
             min_steps = self.add_steps * self.add_times + args.post_min_steps
             if args.max_steps < min_steps:
@@ -182,14 +185,14 @@ class GaussianSplatting2D(nn.Module):
                 args.max_steps = min_steps
         else:
             self.num_gaussians = self.total_num_gaussians
-    
+
         self.topk = args.topk
         self.eps = 1e-7 if args.disable_tiles else 1e-4
         self.init_scale = args.init_scale
         self.disable_topk_norm = args.disable_topk_norm
         self.disable_inverse_scale = args.disable_inverse_scale
         self.disable_color_init = args.disable_color_init
-    
+
         self.xy = nn.Parameter(self._sample_valid_xy(self.num_gaussians), requires_grad=True)
         self.scale = nn.Parameter(torch.ones(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
         self.rot = nn.Parameter(torch.zeros(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
