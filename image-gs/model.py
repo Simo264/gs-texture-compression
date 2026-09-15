@@ -3,6 +3,7 @@ import math
 import os
 import sys
 import warnings
+import cv2
 from time import perf_counter
 
 import numpy as np
@@ -54,11 +55,10 @@ class GaussianSplatting2D(nn.Module):
         self.scale_bits = args.scale_bits
         self.rot_bits = args.rot_bits
         self.feat_bits = args.feat_bits
-
         self._init_logging(args)
         self._init_bit_precision(args)
-        self._init_target(args)
 
+        self._init_target(args)
         self._init_gaussians(args)
         self._init_loss(args)
         self._init_optimization(args)
@@ -115,55 +115,85 @@ class GaussianSplatting2D(nn.Module):
         self.block_h, self.block_w = 16, 16
 
         path = os.path.join(args.data_root, args.input_path)
-        rgb, alpha, bit_depth = load_texture(path)
-        self.bit_depth = bit_depth
-        self.input_channels = 3
+        rgb, alpha, bit_depth = load_texture(path) # load RGBA texture
+        self.bit_depth = bit_depth # 8 or 16
+        self.input_channels = 3 # 3 channels: RGB
 
-        self.gt_images = torch.from_numpy(rgb).to(dtype=self.dtype, device=self.device)
-        alpha_t = torch.from_numpy(alpha).to(dtype=self.dtype, device=self.device)
-        self.alpha = alpha_t
+        alpha_epsilon = 0.1
+        hole_mask_np = alpha <= alpha_epsilon  # (H, W) bool, True = invalid/hole pixel
 
-        # Maschera booleana: True = buco (pixel da ignorare), False = pixel valido
-        self.hole_mask = alpha_t < 0.5 # threeshold per considerare un pixel come buco
-        self.valid_mask = ~self.hole_mask
-        self.num_valid_pixels = self.valid_mask.sum().item()
+        # padding del colore nei buchi via inpainting
+        if hole_mask_np.any():
+            rgb_hwc_uint8 = np.clip(rgb.transpose(1, 2, 0) * 255.0, 0, 255).astype(np.uint8)
+            inpaint_mask = (hole_mask_np.astype(np.uint8)) * 255
+            rgb_filled_uint8 = cv2.inpaint(
+                rgb_hwc_uint8, inpaint_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA
+            )
+            rgb_filled = rgb_filled_uint8.astype(np.float32) / 255.0  # (H,W,3) in [0,1]
+            rgb = rgb_filled.transpose(2, 0, 1)  # torna a (3,H,W), coerente col resto del pipeline
 
-        self.img_h, self.img_w = self.gt_images.shape[1:]
+        self.gt_image = torch.from_numpy(rgb).to(dtype=self.dtype, device=self.device)
+        self.alpha = torch.from_numpy(alpha).to(dtype=self.dtype, device=self.device)
+
+        self.valid_mask = self.alpha > alpha_epsilon # valid pixels are those with alpha > 0.1
+        self.hole_mask = ~self.valid_mask # hole pixels are those with alpha <= 0.1
+
+        self.num_valid_pixels = self.valid_mask.sum().item() # calculate the number of valid pixels
+        if self.num_valid_pixels == 0:
+            raise ValueError("Texture contains no valid pixels according to the alpha mask.")
+
+        self.img_h, self.img_w = self.gt_image.shape[1:]
         self.num_pixels = self.img_h * self.img_w
         self.tile_bounds = (
             (self.img_w + self.block_w - 1) // self.block_w,
             (self.img_h + self.block_h - 1) // self.block_h,
             1,
         )
+
+        self.pixel_xy = get_grid(h=self.img_h, w=self.img_w).to(dtype=self.dtype,device=self.device).reshape(-1, 2)
+        self.valid_pixel_indices = torch.where(self.valid_mask.reshape(-1))[0]
+
         if not self.evaluate:
             path = f"{self.log_dir}/gt_res-{self.img_h:d}x{self.img_w:d}.png"
-            save_texture(rgb=self.gt_images, alpha=alpha_t, save_path=path, bit_depth=self.bit_depth)
+            save_texture(rgb=self.gt_image, alpha=self.alpha, save_path=path, bit_depth=self.bit_depth)
 
     def _init_gaussians(self, args):
-        self.num_gaussians = args.num_gaussians
-        self.total_num_gaussians = args.num_gaussians
         self.disable_prog_optim = args.disable_prog_optim
+    
+        # The number of gaussians cannot exceed the number of valid pixels
+        self.total_num_gaussians = min(args.num_gaussians, self.num_valid_pixels)
+        if self.total_num_gaussians < args.num_gaussians:
+            self.worklog.info(
+                f"Requested {args.num_gaussians:d} gaussians but only {self.num_valid_pixels:d} "
+                f"valid pixels available. Capping total_num_gaussians to {self.total_num_gaussians:d}."
+            )
+    
         if not self.disable_prog_optim and not self.evaluate:
             self.initial_ratio = args.initial_ratio
             self.add_times = args.add_times
             self.add_steps = args.add_steps
             self.num_gaussians = math.ceil(self.initial_ratio * self.total_num_gaussians)
-            self.max_add_num = math.ceil(float(self.total_num_gaussians-self.num_gaussians) / self.add_times)
+            self.num_gaussians = min(self.num_gaussians, self.num_valid_pixels)  # difesa ridondante ma innocua
+    
+            self.max_add_num = math.ceil(float(self.total_num_gaussians - self.num_gaussians) / self.add_times)
             min_steps = self.add_steps * self.add_times + args.post_min_steps
             if args.max_steps < min_steps:
                 self.worklog.info(f"Max steps ({args.max_steps:d}) is too small for progressive optimization. Resetting to {min_steps:d}")
                 args.max_steps = min_steps
+        else:
+            self.num_gaussians = self.total_num_gaussians
+    
         self.topk = args.topk
         self.eps = 1e-7 if args.disable_tiles else 1e-4
         self.init_scale = args.init_scale
         self.disable_topk_norm = args.disable_topk_norm
         self.disable_inverse_scale = args.disable_inverse_scale
         self.disable_color_init = args.disable_color_init
-
+    
         self.xy = nn.Parameter(self._sample_valid_xy(self.num_gaussians), requires_grad=True)
         self.scale = nn.Parameter(torch.ones(self.num_gaussians, 2, dtype=self.dtype, device=self.device), requires_grad=True)
         self.rot = nn.Parameter(torch.zeros(self.num_gaussians, 1, dtype=self.dtype, device=self.device), requires_grad=True)
-        self.feat_dim = self.input_channels  # ora è un int (3), non più sum(lista)
+        self.feat_dim = self.input_channels
         self.feat = nn.Parameter(torch.rand(self.num_gaussians, self.feat_dim, dtype=self.dtype, device=self.device), requires_grad=True)
         self.vis_feat = nn.Parameter(torch.rand_like(self.feat), requires_grad=False)
         self._log_compression_rate()
@@ -183,30 +213,20 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info(f"Compression rate: {bpp_uncompressed/bpp_compressed:.2f}x | {100.0*bpp_compressed/bpp_uncompressed:.2f}%")
         self.worklog.info("***********************************************")
 
-    def _sample_valid_xy(self, num_samples):
-        """
-        Sample `num_samples` normalized (x, y) coordinates in [0, 1) restricted to valid (non-hole) pixel locations.
-        """
-        valid_indices = torch.nonzero(self.valid_mask.flatten(), as_tuple=False).squeeze(-1)
-        if valid_indices.numel() == 0:
-            raise ValueError("No valid pixels found: all pixels are masked out by alpha_threshold.")
+    def _sample_valid_xy(self, n):
+        perm = torch.randperm(self.num_valid_pixels, device=self.device)[:n]
+        flat_idx = self.valid_pixel_indices[perm]
 
-        if num_samples <= valid_indices.numel():
-            perm = torch.randperm(valid_indices.numel(), device=self.device)[:num_samples]
-        else:
-            # più gaussiane richieste che pixel validi disponibili -> campiona con ripetizione
-            perm = torch.randint(0, valid_indices.numel(), (num_samples,), device=self.device)
-        sampled = valid_indices[perm]
+        row = (flat_idx // self.img_w).to(self.dtype)
+        col = (flat_idx % self.img_w).to(self.dtype)
 
-        rows = (sampled // self.img_w).to(self.dtype)
-        cols = (sampled % self.img_w).to(self.dtype)
+        jitter_row = (torch.rand(n, device=self.device, dtype=self.dtype) - 0.5)
+        jitter_col = (torch.rand(n, device=self.device, dtype=self.dtype) - 0.5)
 
-        jitter_x = torch.rand(num_samples, dtype=self.dtype, device=self.device)
-        jitter_y = torch.rand(num_samples, dtype=self.dtype, device=self.device)
+        y = (row + 0.5 + jitter_row) / self.img_h
+        x = (col + 0.5 + jitter_col) / self.img_w
 
-        x = (cols + jitter_x) / self.img_w
-        y = (rows + jitter_y) / self.img_h
-        return torch.stack([x, y], dim=1)
+        return torch.stack([x, y], dim=-1)
 
     def _init_loss(self, args):
         self.l1_loss = None
@@ -238,8 +258,7 @@ class GaussianSplatting2D(nn.Module):
     def _init_pos_scale_feat(self, args):
         self.init_mode = args.init_mode
         self.init_random_ratio = args.init_random_ratio
-        self.pixel_xy = get_grid(h=self.img_h, w=self.img_w).to(dtype=self.dtype, device=self.device).reshape(-1, 2)
-        valid_indices = torch.nonzero(self.valid_mask.flatten(), as_tuple=False).squeeze(-1).cpu().numpy()
+        valid_indices = self.valid_pixel_indices.cpu().numpy()
         with torch.no_grad():
             # Position
             if self.init_mode == 'gradient':
@@ -270,13 +289,14 @@ class GaussianSplatting2D(nn.Module):
         replace_random = num_random > valid_indices.size
         selected_random = np.random.choice(valid_indices, num_random, replace=replace_random, p=None)
 
-        replace_other = num_other > valid_indices.size
+        nonzero_count = int((prob > 0).sum())
+        replace_other = num_other > nonzero_count
         selected_other = np.random.choice(valid_indices, num_other, replace=replace_other, p=prob)
 
         return torch.cat([self.pixel_xy.detach().clone()[selected_random], self.pixel_xy.detach().clone()[selected_other]], dim=0)
 
     def _compute_gmap(self):
-        gy, gx = compute_image_gradients(self.gt_images.detach().cpu().clone().numpy())
+        gy, gx = compute_image_gradients(self.gt_image.detach().cpu().clone().numpy())
         g_norm = np.hypot(gy, gx).astype(np.float32)
 
         hole_mask_np = self.hole_mask.detach().cpu().numpy()
@@ -291,7 +311,7 @@ class GaussianSplatting2D(nn.Module):
         self.worklog.info("***********************************************")
 
     def _compute_smap(self, path):
-        smap = get_smap(self.gt_images.detach().clone(), path, self.smap_filter_size)
+        smap = get_smap(self.gt_image.detach().clone(), path, self.smap_filter_size)
         smap = smap.masked_fill(self.hole_mask, 0.0)
         save_grayscale(smap, f"{self.log_dir}/smap_res-{self.img_h:d}x{self.img_w:d}.png")
         smap = smap.reshape(-1)
@@ -302,7 +322,7 @@ class GaussianSplatting2D(nn.Module):
     def _get_target_features(self, positions):
         with torch.no_grad():
             # gt_images [1, C, H, W]; positions [1, 1, P, 2]; top-left [-1, -1]; bottom-right [1, 1]
-            target_features = F.grid_sample(self.gt_images.unsqueeze(0), positions[None, None, ...] * 2.0 - 1.0, align_corners=False)
+            target_features = F.grid_sample(self.gt_image.unsqueeze(0), positions[None, None, ...] * 2.0 - 1.0, align_corners=False)
             target_features = target_features[0, :, 0, :].permute(1, 0)  # [P, C]
         return target_features
 
@@ -380,29 +400,29 @@ class GaussianSplatting2D(nn.Module):
         mask = self.valid_mask.unsqueeze(0)  # (1, H, W), broadcast su feat_dim canali
 
         if self.l1_loss_ratio > 1e-7:
-            diff = torch.abs(images - self.gt_images) * mask
+            diff = torch.abs(images - self.gt_image) * mask
             self.l1_loss = self.l1_loss_ratio * (diff.sum() / (self.num_valid_pixels * self.feat_dim))
             self.total_loss += self.l1_loss
         else:
             self.l1_loss = None
 
         if self.l2_loss_ratio > 1e-7:
-            diff2 = (images - self.gt_images) ** 2 * mask
+            diff2 = (images - self.gt_image) ** 2 * mask
             self.l2_loss = self.l2_loss_ratio * (diff2.sum() / (self.num_valid_pixels * self.feat_dim))
             self.total_loss += self.l2_loss
         else:
             self.l2_loss = None
 
         if self.ssim_loss_ratio > 1e-7:
-            images_for_ssim = torch.where(mask, images, self.gt_images)  # azzera il contributo dei buchi
-            self.ssim_loss = self.ssim_loss_ratio * (1 - fused_ssim(images_for_ssim.unsqueeze(0), self.gt_images.unsqueeze(0)))
+            images_for_ssim = torch.where(mask, images, self.gt_image)  # azzera il contributo dei buchi
+            self.ssim_loss = self.ssim_loss_ratio * (1 - fused_ssim(images_for_ssim.unsqueeze(0), self.gt_image.unsqueeze(0)))
             self.total_loss += self.ssim_loss
         else:
             self.ssim_loss = None
 
     def _evaluate(self, log=True):
         images = torch.clamp(self._render_images(), 0.0, 1.0)
-        gt_images = self.gt_images
+        gt_images = self.gt_image
         mask = self.valid_mask.unsqueeze(0)
 
         psnr = get_psnr(images, gt_images, mask, self.num_valid_pixels, self.feat_dim)
@@ -428,7 +448,7 @@ class GaussianSplatting2D(nn.Module):
             return
         raw_images = self._render_images()
         images = torch.clamp(raw_images, 0.0, 1.0)
-        gt_images = self.gt_images
+        gt_images = self.gt_image
         kernel_size = round(np.sqrt(self.img_h * self.img_w) // 400)
         if kernel_size >= 1:
             kernel_size = max(3, kernel_size)
@@ -501,7 +521,7 @@ class GaussianSplatting2D(nn.Module):
         save_texture(rgb=images, alpha=self.alpha, save_path=path)
         if plot_gaussians:
             path = f"{self.train_dir}/flip-error_step-{self.step:d}_psnr-{psnr:.2f}_ssim-{ssim:.4f}_res-{self.img_h:d}x{self.img_w:d}"
-            save_error_maps(path, images, self.gt_images, mask=self.valid_mask, save_image_format=self.save_image_format)
+            save_error_maps(path, images, self.gt_image, mask=self.valid_mask, save_image_format=self.save_image_format)
             path = f"{self.train_dir}/gaussian-position_step-{self.step:d}_psnr-{psnr:.2f}_ssim-{ssim:.4f}_res-{self.img_h:d}x{self.img_w:d}"
             every_n = max(1, self.total_num_gaussians // 1000)
             size = 1.5 * (self.img_h * self.img_w) / 1e4
@@ -539,8 +559,8 @@ class GaussianSplatting2D(nn.Module):
     def _evaluate_extra(self):
         mask = self.valid_mask.unsqueeze(0)  # (1, H, W)
         raw_images = torch.clamp(self._render_images(), 0.0, 1.0)
-        images = torch.where(mask, raw_images, self.gt_images)[None, ...]
-        gt_images = self.gt_images[None, ...]
+        images = torch.where(mask, raw_images, self.gt_image)[None, ...]
+        gt_images = self.gt_image[None, ...]
 
         msssim_metric = MS_SSIM(data_range=1.0, size_average=True, channel=self.feat_dim).to(device=self.device).eval()
         self.msssim_final = msssim_metric(images, gt_images).item()

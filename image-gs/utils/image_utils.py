@@ -65,7 +65,7 @@ def load_texture(load_path):
     alpha = image[..., 3]                    # (H, W)
     return rgb, alpha, bit_depth
 
-def save_texture(rgb, alpha, save_path, bit_depth=8, zoom=None):
+def save_texture(rgb, alpha, save_path, bit_depth=8):
     """
     Save an RGB image + alpha channel as a single RGBA PNG.
 
@@ -99,10 +99,6 @@ def save_texture(rgb, alpha, save_path, bit_depth=8, zoom=None):
         rgba = (65535.0 * rgba).astype(np.uint16)
     else:
         raise ValueError(f"Unsupported bit_depth: {bit_depth}")
-
-    if zoom is not None and zoom > 0.0:
-        height, width = rgba.shape[:2]
-        rgba = cv2.resize(rgba, (round(width * zoom), round(height * zoom)), interpolation=cv2.INTER_NEAREST)
 
     # RGBA -> BGRA for cv2
     rgba = rgba[..., [2, 1, 0, 3]]
@@ -191,7 +187,7 @@ def visualize_gaussian_position(filepath, image, xy, color="#7bf1a8", size=700, 
 
 
 
-# TODO 
+# TODO
 
 def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, input_channels, alpha=0.8, gamma=None, save_image_format="jpg"):
     """

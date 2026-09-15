@@ -25,7 +25,6 @@ def get_gaussian_cfg(args):
     gaussian_cfg += f"_{args.init_mode[0]}-{args.init_random_ratio:.1f}"
     return gaussian_cfg
 
-
 def get_log_dir(args):
     gaussian_cfg = get_gaussian_cfg(args)
     loss_cfg = f"l1-{args.l1_loss_ratio:.1f}_l2-{args.l2_loss_ratio:.1f}_ssim-{args.ssim_loss_ratio:.1f}"
@@ -37,7 +36,6 @@ def get_log_dir(args):
     if not args.disable_prog_optim:
         folder += "_prog"
     return f"{args.log_root}/{args.exp_name}/{folder}"
-
 
 def main(args):
     args.log_dir = get_log_dir(args)
