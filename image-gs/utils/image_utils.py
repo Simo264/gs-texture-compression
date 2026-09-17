@@ -128,13 +128,7 @@ def compute_image_gradients(image):
     gx = norm(np.stack(gx, axis=0), ord=2, axis=0).astype(np.float32)
     return gy, gx
 
-def get_psnr(image1, image2, mask, num_valid_pixels, feat_dim, max_value=1.0):
-    diff2 = (image1 - image2) ** 2 * mask
-    mse = diff2.sum() / (num_valid_pixels * feat_dim)
-    if mse.item() <= 1e-7:
-        return float('inf')
-    psnr = 20 * torch.log10(max_value / torch.sqrt(mse))
-    return psnr
+
 
 def save_error_maps(path, images, gt_images, mask, save_image_format="png"):
     images = torch.clamp(images, 0.0, 1.0)
@@ -158,6 +152,14 @@ def save_rgb_image(image, save_path):
     image = (255.0 * image).astype(np.uint8)
     image = image[..., ::-1]  # RGB -> BGR for cv2
     cv2.imwrite(save_path, image)
+
+def get_psnr_masked(image1, image2, mask, num_valid_pixels, feat_dim, max_value=1.0):
+    diff2 = (image1 - image2) ** 2 * mask
+    mse = diff2.sum() / (num_valid_pixels * feat_dim)
+    if mse.item() <= 1e-7:
+        return float('inf')
+    psnr = 20 * torch.log10(max_value / torch.sqrt(mse))
+    return psnr
 
 def visualize_gaussian_position(filepath, image, xy, color="#7bf1a8", size=700, every_n=10, alpha=0.8, save_image_format="png"):
     """
@@ -184,10 +186,6 @@ def visualize_gaussian_position(filepath, image, xy, color="#7bf1a8", size=700, 
     plt.tight_layout()
     plt.savefig(f"{filepath}.{save_image_format}", bbox_inches='tight', pad_inches=0, dpi=PLOT_DPI)
     plt.close()
-
-
-
-# TODO
 
 def visualize_gaussian_footprint(filepath, xy, scale, rot, feat, img_h, img_w, input_channels, alpha=0.8, gamma=None, save_image_format="jpg"):
     """
