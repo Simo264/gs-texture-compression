@@ -76,6 +76,10 @@ class GaussianSplatting2D(nn.Module):
         self.l2_loss_ratio = args.l2_loss_ratio
         self.ssim_loss_ratio = args.ssim_loss_ratio
         self.disable_tiles = args.disable_tiles
+        self.decay_ratio = args.decay_ratio
+        self.check_decay_steps = args.check_decay_steps
+        self.max_decay_times = args.max_decay_times
+        self.decay_threshold = args.decay_threshold
         self.start_step = 1
         self.max_steps = args.max_steps
         self.pos_lr = args.pos_lr
