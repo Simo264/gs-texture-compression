@@ -20,7 +20,7 @@ Per facilitare l'ottimizzazione ai bordi si applica `cv2.inpaint(..., cv2.INPAIN
 
 **Obiettivo**: Adattare ImageGS affinché Gaussiane, loss, metriche (PSNR/SSIM/LPIPS), densificazione e rendering ignorino completamente i buchi e lavorino esclusivamente sui pixel validi, confrontandosi sempre con l'RGB originale.
 
-# Fase 1 (Inizializzazione) [COMPLETATA]
+# Fase 1 (Inizializzazione)
 
 ## Gestione Target e Inpainting  (`_init_target`)
 Qua viene calcolata la maschera dei buchi; viene applicato inpainting sui buchi per evitare discontinuità di gradiente ai bordi che attirerebbero Gaussiane spurie durante la densificazione. I pixel validi nell'immagine inpainted vengono sovrascritti con i valori originali.
@@ -61,14 +61,13 @@ I valori della `error_map` corrispondenti ai buchi vengono poi azzerati esplicit
 
 # 3. Rendering
 
-##### 3.1 Metodo `render()`
+##### 3.1 `render()`
+Il metodo render originale è pensato per valutare o visualizzare il modello a risoluzioni diverse, tipicamente per generare immagini a risoluzioni più alte (upsampling) o più basse (downsampling). 
+Nel tuo caso, però, il vincolo è che la risoluzione della texture rimanga invariata durante tutto il processo. Quindi la modifica principale consiste nel disattivare qualsiasi forma di ricampionamento e forzare il rendering alla risoluzione originale. Il metodo render di per sé non gestisce i buchi. Produce un'immagine completa di tutti i pixel, validi e non. I buchi vengono ignorati a livello di loss, metriche e densificazione, non nel rendering. Quindi non devi aggiungere maschere qui. 
 
+Ignoriamo completamente l'argomento `render_height` (rimosso dalla signature) e anche `upsample_ratio`.
 
+##### 3.2 `forward()`
+Il metodo forward è il motore di rasterizzazione. Il suo unico compito è proiettare le Gaussiane 2D e fondere i loro colori (feat) in un tensore immagine. Non deve (e non dovrebbe) sapere dell'esistenza dei buchi.
 
-# Strategia di lavoro richiesta all'agente
-
-- Procedere in modo incrementale.
-- Se trovi problemi, proponi la modifica necessaria, spiegando perché garantisce il requisito e (eventualmente) quali effetti collaterali può introdurre.
-- Se non trovi problemi gravi, dichiaralo e fermati.
-- Verificare la correttezza della soluzione
-- Non riscrivere intere funzioni se non necessario, ma solo le posizioni specifiche su dove intervenire.
+Non richiede modifiche.
