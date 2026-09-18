@@ -50,6 +50,7 @@ class GaussianSplatting2D(nn.Module):
         self.evaluate = args.eval
         self.device = args.device
         self.dtype = torch.float32
+        self.gamma = args.gamma
         self.quantize = args.quantize
         self.pos_bits = args.pos_bits
         self.scale_bits = args.scale_bits
