@@ -2,8 +2,7 @@ import os
 import cv2
 import flip_evaluator
 import matplotlib
-#import matplotlib.font_manager as font_manager
-from matplotlib import font_manager
+import matplotlib.font_manager as font_manager
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
