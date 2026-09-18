@@ -110,22 +110,19 @@ def save_as_rgba(image_rgb, alpha, save_path, bit_depth=8, gamma=None):
     assert image_rgb.shape[0] == 3, "save_as_rgba expects RGB, not RGBA"
     assert alpha.ndim == 2 or (alpha.ndim == 3 and alpha.shape[0] == 1)
 
-    """
-    Salva un'immagine RGBA.
-    image_rgb: (3, H, W)
-    alpha: (H, W) oppure (1, H, W)
-    """
-    # Prepara il canale Alpha (gestisce sia (H,W) che (1,H,W))
-    if isinstance(alpha, torch.Tensor):
-        alpha = alpha.detach().cpu().numpy()
-    if alpha.ndim == 2:
-        alpha = alpha[..., np.newaxis] # Diventa (H, W, 1)
-
-    # Prepara i canali (BGR per i colori, nessun flip per l'alpha)
+    # 1. Converti RGB in BGR. to_cv2_image lo porta da (3, H, W) a (H, W, 3)
     bgr = to_cv2_image(image_rgb, bit_depth, to_bgr=True, gamma=gamma)
+
+    # 2. Converti Alpha.
+    # Se era (1, H, W), to_cv2_image lo porta automaticamente a (H, W, 1).
+    # Se era (H, W), resta (H, W).
     a = to_cv2_image(alpha, bit_depth, to_bgr=False, gamma=None)
 
-    # Concatena e salva
+    # 3. Assicurati che 'a' sia (H, W, 1) per poter fare il concatenate sull'ultimo asse
+    if a.ndim == 2:
+        a = a[..., np.newaxis]
+
+    # 4. Concatena e salva
     bgra = np.concatenate([bgr, a], axis=-1)
     cv2.imwrite(save_path, bgra)
 
